@@ -2,4 +2,4 @@
 . "$(dirname "$0")/_/husky.sh"
 
 golangci-lint run -v --fix && \
-cd web && yarn lint
+cd web && pnpm lint
