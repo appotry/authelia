@@ -1,12 +1,8 @@
-FROM haproxy:2.5.5-alpine
+FROM haproxy:3.1.5-alpine@sha256:5090db844ab40e648ad485eefc7cf469b4aee3c9fe6c4c65cbb19d99d13a0952
 USER root
 
 RUN \
 apk add --no-cache \
-  curl \
-  lua-json4 \
-  openssl && \
-openssl req -new -newkey rsa:4096 -days 365 -nodes -x509 -subj "/C=AU/ST=Victoria/L=Melbourne/O=Authelia/CN=*.example.com" -keyout haproxy.key -out haproxy.crt && \
-cat haproxy.key haproxy.crt > /usr/local/etc/haproxy/haproxy.pem
+  lua-json4
 
 USER haproxy

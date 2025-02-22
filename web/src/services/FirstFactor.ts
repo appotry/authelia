@@ -1,4 +1,4 @@
-import { FirstFactorPath } from "@services/Api";
+import { FirstFactorPath, FirstFactorReauthenticatePath } from "@services/Api";
 import { PostWithOptionalResponse } from "@services/Client";
 import { SignInResponse } from "@services/SignIn";
 
@@ -8,6 +8,16 @@ interface PostFirstFactorBody {
     keepMeLoggedIn: boolean;
     targetURL?: string;
     requestMethod?: string;
+    workflow?: string;
+    workflowID?: string;
+}
+
+interface PostFirstFactorReauthenticateBody {
+    password: string;
+    targetURL?: string;
+    requestMethod?: string;
+    workflow?: string;
+    workflowID?: string;
 }
 
 export async function postFirstFactor(
@@ -16,6 +26,8 @@ export async function postFirstFactor(
     rememberMe: boolean,
     targetURL?: string,
     requestMethod?: string,
+    workflow?: string,
+    workflowID?: string,
 ) {
     const data: PostFirstFactorBody = {
         username,
@@ -31,6 +43,45 @@ export async function postFirstFactor(
         data.requestMethod = requestMethod;
     }
 
+    if (workflow) {
+        data.workflow = workflow;
+    }
+
+    if (workflowID) {
+        data.workflowID = workflowID;
+    }
+
     const res = await PostWithOptionalResponse<SignInResponse>(FirstFactorPath, data);
+    return res ? res : ({} as SignInResponse);
+}
+
+export async function postFirstFactorReauthenticate(
+    password: string,
+    targetURL?: string,
+    requestMethod?: string,
+    workflow?: string,
+    workflowID?: string,
+) {
+    const data: PostFirstFactorReauthenticateBody = {
+        password,
+    };
+
+    if (targetURL) {
+        data.targetURL = targetURL;
+    }
+
+    if (requestMethod) {
+        data.requestMethod = requestMethod;
+    }
+
+    if (workflow) {
+        data.workflow = workflow;
+    }
+
+    if (workflowID) {
+        data.workflowID = workflowID;
+    }
+
+    const res = await PostWithOptionalResponse<SignInResponse>(FirstFactorReauthenticatePath, data);
     return res ? res : ({} as SignInResponse);
 }
