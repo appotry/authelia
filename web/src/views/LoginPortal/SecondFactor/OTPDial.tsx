@@ -1,13 +1,13 @@
 import React, { Fragment } from "react";
 
-import { makeStyles } from "@material-ui/core";
+import { Theme } from "@mui/material";
+import makeStyles from "@mui/styles/makeStyles";
 import classnames from "classnames";
-import OtpInput from "react-otp-input";
+import OtpInput from "react18-input-otp";
 
 import SuccessIcon from "@components/SuccessIcon";
 import TimerIcon from "@components/TimerIcon";
 import IconWithContext from "@views/LoginPortal/SecondFactor/IconWithContext";
-import { State } from "@views/LoginPortal/SecondFactor/OneTimePasswordMethod";
 
 export interface Props {
     passcode: string;
@@ -19,30 +19,44 @@ export interface Props {
     onChange: (passcode: string) => void;
 }
 
+export enum State {
+    Idle = 1,
+    InProgress = 2,
+    Success = 3,
+    Failure = 4,
+    RateLimited = 5,
+}
+
 const OTPDial = function (props: Props) {
-    const style = useStyles();
+    const styles = useStyles();
 
     return (
         <IconWithContext icon={<Icon state={props.state} period={props.period} />}>
-            <span className={style.otpInput} id="otp-input">
+            <span className={styles.otpInput} id="otp-input">
                 <OtpInput
                     shouldAutoFocus
                     onChange={props.onChange}
                     value={props.passcode}
                     numInputs={props.digits}
-                    isDisabled={props.state === State.InProgress || props.state === State.Success}
+                    isDisabled={
+                        props.state === State.InProgress ||
+                        props.state === State.Success ||
+                        props.state === State.RateLimited
+                    }
                     isInputNum
                     hasErrored={props.state === State.Failure}
-                    inputStyle={classnames(style.otpDigitInput, props.state === State.Failure ? style.inputError : "")}
+                    autoComplete="one-time-code"
+                    inputStyle={classnames(
+                        styles.otpDigitInput,
+                        props.state === State.Failure ? styles.inputError : "",
+                    )}
                 />
             </span>
         </IconWithContext>
     );
 };
 
-export default OTPDial;
-
-const useStyles = makeStyles((theme) => ({
+const useStyles = makeStyles((theme: Theme) => ({
     timeProgress: {},
     register: {
         marginTop: theme.spacing(),
@@ -53,7 +67,7 @@ const useStyles = makeStyles((theme) => ({
     },
     otpDigitInput: {
         boxSizing: "content-box",
-        padding: theme.spacing(),
+        padding: theme.spacing() + " !important",
         marginLeft: theme.spacing(0.5),
         marginRight: theme.spacing(0.5),
         fontSize: "1rem",
@@ -80,3 +94,5 @@ function Icon(props: IconProps) {
         </Fragment>
     );
 }
+
+export default OTPDial;

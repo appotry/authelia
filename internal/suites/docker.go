@@ -32,14 +32,14 @@ func NewDockerEnvironment(files []string) *DockerEnvironment {
 }
 
 func (de *DockerEnvironment) createCommandWithStdout(cmd string) *exec.Cmd {
-	dockerCmdLine := fmt.Sprintf("docker-compose -p authelia -f %s %s", strings.Join(de.dockerComposeFiles, " -f "), cmd)
+	dockerCmdLine := fmt.Sprintf("docker compose -p authelia -f %s %s", strings.Join(de.dockerComposeFiles, " -f "), cmd)
 	log.Trace(dockerCmdLine)
 
 	return utils.CommandWithStdout("bash", "-c", dockerCmdLine)
 }
 
 func (de *DockerEnvironment) createCommand(cmd string) *exec.Cmd {
-	dockerCmdLine := fmt.Sprintf("docker-compose -p authelia -f %s %s", strings.Join(de.dockerComposeFiles, " -f "), cmd)
+	dockerCmdLine := fmt.Sprintf("docker compose -p authelia -f %s %s", strings.Join(de.dockerComposeFiles, " -f "), cmd)
 	log.Trace(dockerCmdLine)
 
 	return utils.Command("bash", "-c", dockerCmdLine)
@@ -52,6 +52,10 @@ func (de *DockerEnvironment) Pull(images ...string) error {
 
 // Up spawn a docker environment.
 func (de *DockerEnvironment) Up() error {
+	if os.Getenv("CI") == t {
+		return de.createCommandWithStdout("up --build --quiet-pull -d").Run()
+	}
+
 	return de.createCommandWithStdout("up --build -d").Run()
 }
 
@@ -83,10 +87,42 @@ func (de *DockerEnvironment) Exec(service string, command []string) (string, err
 	return string(content), err
 }
 
+func (de *DockerEnvironment) ExecWithEnv(service string, command []string, env map[string]string) (string, error) {
+	envs := make([]string, 0, len(env))
+
+	for k, v := range env {
+		envs = append(envs, fmt.Sprintf("-e %s=%s", k, v))
+	}
+
+	cmd := de.createCommand(fmt.Sprintf("exec %s -T %s %s", strings.Join(envs, " "), service, strings.Join(command, " ")))
+	content, err := cmd.CombinedOutput()
+
+	return string(content), err
+}
+
 // Logs get logs of a given service of the environment.
 func (de *DockerEnvironment) Logs(service string, flags []string) (string, error) {
 	cmd := de.createCommand(fmt.Sprintf("logs %s %s", strings.Join(flags, " "), service))
 	content, err := cmd.Output()
 
 	return string(content), err
+}
+
+// PrintLogs for the given service names.
+func (de *DockerEnvironment) PrintLogs(services ...string) (err error) {
+	var logs string
+
+	for _, service := range services {
+		if service == "authelia-frontend" && os.Getenv("CI") == t {
+			continue
+		}
+
+		if logs, err = de.Logs(service, nil); err != nil {
+			return err
+		}
+
+		fmt.Println(logs) //nolint:forbidigo
+	}
+
+	return nil
 }

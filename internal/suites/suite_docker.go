@@ -1,7 +1,6 @@
 package suites
 
 import (
-	"fmt"
 	"time"
 )
 
@@ -9,39 +8,29 @@ var dockerSuiteName = "Docker"
 
 func init() {
 	dockerEnvironment := NewDockerEnvironment([]string{
-		"internal/suites/docker-compose.yml",
-		"internal/suites/Docker/docker-compose.yml",
-		"internal/suites/example/compose/authelia/docker-compose.backend.dist.yml",
-		"internal/suites/example/compose/authelia/docker-compose.frontend.dist.yml",
-		"internal/suites/example/compose/nginx/backend/docker-compose.yml",
-		"internal/suites/example/compose/nginx/portal/docker-compose.yml",
-		"internal/suites/example/compose/smtp/docker-compose.yml",
+		"internal/suites/compose.yml",
+		"internal/suites/Docker/compose.yml",
+		"internal/suites/example/compose/authelia/compose.backend.dist.yml",
+		"internal/suites/example/compose/authelia/compose.frontend.dist.yml",
+		"internal/suites/example/compose/nginx/backend/compose.yml",
+		"internal/suites/example/compose/nginx/portal/compose.yml",
+		"internal/suites/example/compose/smtp/compose.yml",
 	})
 
-	setup := func(suitePath string) error {
-		if err := dockerEnvironment.Up(); err != nil {
+	setup := func(suitePath string) (err error) {
+		if err = dockerEnvironment.Up(); err != nil {
 			return err
 		}
 
-		return waitUntilAutheliaIsReady(dockerEnvironment, dockerSuiteName)
+		if err = waitUntilAutheliaIsReady(dockerEnvironment, dockerSuiteName); err != nil {
+			return err
+		}
+
+		return updateDevEnvFileForDomain(BaseDomain, true)
 	}
 
 	displayAutheliaLogs := func() error {
-		backendLogs, err := dockerEnvironment.Logs("authelia-backend", nil)
-		if err != nil {
-			return err
-		}
-
-		fmt.Println(backendLogs)
-
-		frontendLogs, err := dockerEnvironment.Logs("authelia-frontend", nil)
-		if err != nil {
-			return err
-		}
-
-		fmt.Println(frontendLogs)
-
-		return nil
+		return dockerEnvironment.PrintLogs("authelia-backend", "authelia-frontend")
 	}
 
 	teardown := func(suitePath string) error {
