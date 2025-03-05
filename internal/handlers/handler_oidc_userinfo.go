@@ -1,131 +1,166 @@
 package handlers
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
 
+	oauthelia2 "authelia.com/provider/oauth2"
+	"authelia.com/provider/oauth2/token/jwt"
+	"authelia.com/provider/oauth2/x/errorsx"
 	"github.com/google/uuid"
-	"github.com/ory/fosite"
-	"github.com/ory/fosite/token/jwt"
 	"github.com/pkg/errors"
+	"github.com/valyala/fasthttp"
 
 	"github.com/authelia/authelia/v4/internal/middlewares"
 	"github.com/authelia/authelia/v4/internal/oidc"
 )
 
-func oidcUserinfo(ctx *middlewares.AutheliaCtx, rw http.ResponseWriter, req *http.Request) {
+// OpenIDConnectUserinfo handles GET/POST requests to the OpenID Connect 1.0 UserInfo endpoint.
+//
+// https://openid.net/specs/openid-connect-core-1_0.html#UserInfo
+func OpenIDConnectUserinfo(ctx *middlewares.AutheliaCtx, rw http.ResponseWriter, r *http.Request) {
 	var (
-		tokenType fosite.TokenType
-		requester fosite.AccessRequester
-		client    *oidc.InternalClient
+		requestID uuid.UUID
+		tokenType oauthelia2.TokenType
+		requester oauthelia2.AccessRequester
+		client    oidc.Client
 		err       error
 	)
 
+	if requestID, err = uuid.NewRandom(); err != nil {
+		errorsx.WriteJSONError(rw, r, oauthelia2.ErrServerError)
+
+		return
+	}
+
 	oidcSession := oidc.NewSession()
 
-	if tokenType, requester, err = ctx.Providers.OpenIDConnect.Fosite.IntrospectToken(
-		req.Context(), fosite.AccessTokenFromRequest(req), fosite.AccessToken, oidcSession); err != nil {
-		rfc := fosite.ErrorToRFC6749Error(err)
+	ctx.Logger.Debugf("User Info Request with id '%s' is being processed", requestID)
 
-		ctx.Logger.Errorf("UserInfo Request failed with error: %+v", rfc)
+	if tokenType, requester, err = ctx.Providers.OpenIDConnect.IntrospectToken(r.Context(), oauthelia2.AccessTokenFromRequest(r), oauthelia2.AccessToken, oidcSession); err != nil {
+		ctx.Logger.Errorf("User Info Request with id '%s' failed with error: %s", requestID, oauthelia2.ErrorToDebugRFC6749Error(err))
 
-		if rfc.StatusCode() == http.StatusUnauthorized {
-			rw.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer error="%s",error_description="%s"`, rfc.ErrorField, rfc.GetDescription()))
+		if rfc := oauthelia2.ErrorToRFC6749Error(err); rfc.StatusCode() == http.StatusUnauthorized {
+			rw.Header().Set(fasthttp.HeaderWWWAuthenticate, fmt.Sprintf(`Bearer %s`, oidc.RFC6750Header("", "", rfc)))
 		}
 
-		ctx.Providers.OpenIDConnect.WriteError(rw, req, err)
+		errorsx.WriteJSONError(rw, r, err)
 
 		return
 	}
 
-	clientID := requester.GetClient().GetID()
-
-	if tokenType != fosite.AccessToken {
-		ctx.Logger.Errorf("UserInfo Request with id '%s' on client with id '%s' failed with error: bearer authorization failed as the token is not an access_token", requester.GetID(), client.GetID())
+	if tokenType != oauthelia2.AccessToken {
+		ctx.Logger.Errorf("User Info Request with id '%s' on client with id '%s' failed with error: bearer authorization failed as the token is not an access token", requestID, client.GetID())
 
 		errStr := "Only access tokens are allowed in the authorization header."
-		rw.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer error="invalid_token",error_description="%s"`, errStr))
-		ctx.Providers.OpenIDConnect.WriteErrorCode(rw, req, http.StatusUnauthorized, errors.New(errStr))
+		rw.Header().Set(fasthttp.HeaderWWWAuthenticate, fmt.Sprintf(`Bearer error="invalid_token",error_description="%s"`, errStr))
+		errorsx.WriteJSONErrorCode(rw, r, http.StatusUnauthorized, errors.New(errStr))
 
 		return
 	}
 
-	if client, err = ctx.Providers.OpenIDConnect.Store.GetInternalClient(clientID); err != nil {
-		ctx.Providers.OpenIDConnect.WriteError(rw, req, errors.WithStack(fosite.ErrServerError.WithHint("Unable to assert type of client")))
+	if client, err = ctx.Providers.OpenIDConnect.GetRegisteredClient(ctx, requester.GetClient().GetID()); err != nil {
+		ctx.Logger.Errorf("User Info Request with id '%s' on client with id '%s' failed to retrieve client configuration with error: %s", requestID, client.GetID(), oauthelia2.ErrorToDebugRFC6749Error(err))
+
+		errorsx.WriteJSONError(rw, r, err)
 
 		return
 	}
-
-	claims := requester.GetSession().(*oidc.OpenIDSession).IDTokenClaims().ToMap()
-	delete(claims, "jti")
-	delete(claims, "sid")
-	delete(claims, "at_hash")
-	delete(claims, "c_hash")
-	delete(claims, "exp")
-	delete(claims, "nonce")
-
-	audience, ok := claims["aud"].([]string)
-
-	if !ok || len(audience) == 0 {
-		audience = []string{client.GetID()}
-	} else {
-		found := false
-
-		for _, aud := range audience {
-			if aud == clientID {
-				found = true
-				break
-			}
-		}
-
-		if found {
-			audience = append(audience, clientID)
-		}
-	}
-
-	claims["aud"] = audience
 
 	var (
-		keyID, token string
+		original      map[string]any
+		requests      map[string]*oidc.ClaimRequest
+		claimsGranted oauthelia2.Arguments
+		userinfo      bool
 	)
 
-	ctx.Logger.Tracef("UserInfo Response with id '%s' on client with id '%s' is being sent with the following claims: %+v", requester.GetID(), clientID, claims)
+	switch session := requester.GetSession().(type) {
+	case *oidc.Session:
+		original = session.IDTokenClaims().ToMap()
+		requests = session.ClaimRequests.GetUserInfoRequests()
+		userinfo = !session.ClientCredentials
+		claimsGranted = session.GrantedClaims
+	default:
+		ctx.Logger.Errorf("User Info Request with id '%s' on client with id '%s' failed to handle session with type '%T'", requestID, client.GetID(), session)
 
-	switch client.UserinfoSigningAlgorithm {
-	case "RS256":
+		errorsx.WriteJSONError(rw, r, oauthelia2.ErrServerError.WithDebugf("Failed to handle session with type '%T'.", session))
+
+		return
+	}
+
+	claims := jwt.MapClaims{}
+
+	var detailer oidc.UserDetailer
+
+	if detailer, err = oidcDetailerFromClaims(ctx, original); err != nil {
+		if err = client.GetClaimsStrategy().PopulateClientCredentialsUserInfoClaims(ctx, client, original, claims); err != nil {
+			ctx.Logger.WithError(err).Errorf("User Info Request with id '%s' on client with id '%s' failed due to an error populating claims for the client credentials flow", requestID, client.GetID())
+
+			errorsx.WriteJSONError(rw, r, oauthelia2.ErrServerError.WithDebugf("Error occurred populating claims for the client credentials flow: %v.", err))
+
+			return
+		}
+
+		if userinfo {
+			ctx.Logger.WithError(err).Errorf("User Info Request with id '%s' on client with id '%s' error occurred loading user information", requestID, client.GetID())
+		}
+	} else if err = client.GetClaimsStrategy().PopulateUserInfoClaims(ctx, ctx.Providers.OpenIDConnect.GetScopeStrategy(ctx), client, requester.GetGrantedScopes(), claimsGranted, requests, detailer, ctx.Clock.Now(), original, claims); err != nil {
+		ctx.Logger.WithError(err).Errorf("User Info Request with id '%s' on client with id '%s' failed due to an error populating claims for the standard flow", requestID, client.GetID())
+
+		errorsx.WriteJSONError(rw, r, oauthelia2.ErrServerError.WithDebugf("Error occurred populating claims for the standard flow: %v.", err))
+
+		return
+	}
+
+	var token string
+
+	ctx.Logger.Tracef("User Info Response with id '%s' on client with id '%s' is being sent with the following claims: %+v", requestID, requester.GetClient().GetID(), claims)
+
+	switch alg := client.GetUserinfoSignedResponseAlg(); alg {
+	case oidc.SigningAlgNone:
+		ctx.Logger.Debugf("User Info Request with id '%s' on client with id '%s' is being returned unsigned as per the registered client configuration", requestID, client.GetID())
+
+		rw.Header().Set(fasthttp.HeaderContentType, "application/json; charset=utf-8")
+		rw.Header().Set(fasthttp.HeaderCacheControl, "no-store")
+		rw.Header().Set(fasthttp.HeaderPragma, "no-cache")
+		rw.WriteHeader(http.StatusOK)
+
+		_ = json.NewEncoder(rw).Encode(claims)
+	default:
+		jwtClient := oidc.NewUserinfoClient(client)
+
+		ctx.Logger.Debugf("User Info Request with id '%s' on client with id '%s' is being returned signed as per the registered client configuration with key id '%s' using the '%s' algorithm", requestID, client.GetID(), jwtClient.GetSigningKeyID(), jwtClient.GetSigningAlg())
+
 		var jti uuid.UUID
 
 		if jti, err = uuid.NewRandom(); err != nil {
-			ctx.Providers.OpenIDConnect.WriteError(rw, req, fosite.ErrServerError.WithHintf("Could not generate JWT ID."))
+			ctx.Logger.WithError(err).Errorf("User Info Request with id '%s' on client with id '%s' failed due to an error generating a JTI for the JWT response", requestID, client.GetID())
+
+			errorsx.WriteJSONError(rw, r, oauthelia2.ErrServerError.WithHint("Could not generate JTI."))
 
 			return
 		}
 
-		claims["jti"] = jti.String()
-		claims["iat"] = time.Now().Unix()
+		claims[oidc.ClaimJWTID] = jti.String()
+		claims[oidc.ClaimIssuedAt] = time.Now().UTC().Unix()
 
-		if keyID, err = ctx.Providers.OpenIDConnect.KeyManager.Strategy().GetPublicKeyID(req.Context()); err != nil {
-			ctx.Providers.OpenIDConnect.WriteError(rw, req, fosite.ErrServerError.WithHintf("Could not find the active JWK."))
+		strategy := ctx.Providers.OpenIDConnect.GetJWTStrategy(ctx)
 
-			return
-		}
-
-		headers := &jwt.Headers{
-			Extra: map[string]interface{}{"kid": keyID},
-		}
-
-		if token, _, err = ctx.Providers.OpenIDConnect.KeyManager.Strategy().Generate(req.Context(), claims, headers); err != nil {
-			ctx.Providers.OpenIDConnect.WriteError(rw, req, err)
+		if token, _, err = strategy.Encode(ctx, claims, jwt.WithClient(jwtClient)); err != nil {
+			errorsx.WriteJSONError(rw, r, err)
 
 			return
 		}
 
-		rw.Header().Set("Content-Type", "application/jwt")
+		rw.Header().Set(fasthttp.HeaderContentType, "application/jwt; charset=utf-8")
+		rw.Header().Set(fasthttp.HeaderCacheControl, "no-store")
+		rw.Header().Set(fasthttp.HeaderPragma, "no-cache")
+		rw.WriteHeader(http.StatusOK)
+
 		_, _ = rw.Write([]byte(token))
-	case "none", "":
-		ctx.Providers.OpenIDConnect.Write(rw, req, claims)
-	default:
-		ctx.Providers.OpenIDConnect.WriteError(rw, req, errors.WithStack(fosite.ErrServerError.WithHintf("Unsupported UserInfo signing algorithm '%s'.", client.UserinfoSigningAlgorithm)))
 	}
+
+	ctx.Logger.Debugf("User Info Request with id '%s' on client with id '%s' was successfully processed", requestID, client.GetID())
 }
