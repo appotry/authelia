@@ -1,7 +1,6 @@
 package suites
 
 import (
-	"fmt"
 	"os"
 	"time"
 )
@@ -10,46 +9,29 @@ var duoPushSuiteName = "DuoPush"
 
 func init() {
 	dockerEnvironment := NewDockerEnvironment([]string{
-		"internal/suites/docker-compose.yml",
-		"internal/suites/DuoPush/docker-compose.yml",
-		"internal/suites/example/compose/authelia/docker-compose.backend.{}.yml",
-		"internal/suites/example/compose/authelia/docker-compose.frontend.{}.yml",
-		"internal/suites/example/compose/nginx/backend/docker-compose.yml",
-		"internal/suites/example/compose/nginx/portal/docker-compose.yml",
-		"internal/suites/example/compose/duo-api/docker-compose.yml",
+		"internal/suites/compose.yml",
+		"internal/suites/DuoPush/compose.yml",
+		"internal/suites/example/compose/authelia/compose.backend.{}.yml",
+		"internal/suites/example/compose/authelia/compose.frontend.{}.yml",
+		"internal/suites/example/compose/nginx/backend/compose.yml",
+		"internal/suites/example/compose/nginx/portal/compose.yml",
+		"internal/suites/example/compose/duo-api/compose.yml",
 	})
 
-	setup := func(suitePath string) error {
-		if err := dockerEnvironment.Up(); err != nil {
+	setup := func(suitePath string) (err error) {
+		if err = dockerEnvironment.Up(); err != nil {
 			return err
 		}
 
-		return waitUntilAutheliaIsReady(dockerEnvironment, duoPushSuiteName)
+		if err = waitUntilAutheliaIsReady(dockerEnvironment, duoPushSuiteName); err != nil {
+			return err
+		}
+
+		return updateDevEnvFileForDomain(BaseDomain, true)
 	}
 
 	displayAutheliaLogs := func() error {
-		backendLogs, err := dockerEnvironment.Logs("authelia-backend", nil)
-		if err != nil {
-			return err
-		}
-
-		fmt.Println(backendLogs)
-
-		frontendLogs, err := dockerEnvironment.Logs("authelia-frontend", nil)
-		if err != nil {
-			return err
-		}
-
-		fmt.Println(frontendLogs)
-
-		duoAPILogs, err := dockerEnvironment.Logs("duo-api", nil)
-		if err != nil {
-			return err
-		}
-
-		fmt.Println(duoAPILogs)
-
-		return nil
+		return dockerEnvironment.PrintLogs("authelia-backend", "authelia-frontend", "duo-api")
 	}
 
 	teardown := func(suitePath string) error {
@@ -64,7 +46,7 @@ func init() {
 		SetUpTimeout:    5 * time.Minute,
 		OnSetupTimeout:  displayAutheliaLogs,
 		OnError:         displayAutheliaLogs,
-		TestTimeout:     3 * time.Minute,
+		TestTimeout:     4 * time.Minute,
 		TearDown:        teardown,
 		TearDownTimeout: 2 * time.Minute,
 

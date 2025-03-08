@@ -1,49 +1,137 @@
 package handlers
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/url"
+
+	oauthelia2 "authelia.com/provider/oauth2"
+	"github.com/google/uuid"
+
 	"github.com/authelia/authelia/v4/internal/authentication"
+	"github.com/authelia/authelia/v4/internal/middlewares"
+	"github.com/authelia/authelia/v4/internal/model"
+	"github.com/authelia/authelia/v4/internal/oidc"
+	"github.com/authelia/authelia/v4/internal/session"
 )
 
 // MethodList is the list of available methods.
 type MethodList = []string
 
-type authorizationMatching int
-
 // configurationBody the content returned by the configuration endpoint.
 type configurationBody struct {
-	AvailableMethods MethodList `json:"available_methods"`
+	AvailableMethods       MethodList `json:"available_methods"`
+	PasswordChangeDisabled bool       `json:"password_change_disabled"`
+	PasswordResetDisabled  bool       `json:"password_reset_disabled"`
 }
 
-// signTOTPRequestBody model of the request body received by TOTP authentication endpoint.
-type signTOTPRequestBody struct {
-	Token     string `json:"token" valid:"required"`
-	TargetURL string `json:"targetURL"`
+// bodySignTOTPRequest is the  model of the request body of TOTP 2FA authentication endpoint.
+type bodySignTOTPRequest struct {
+	Token      string `json:"token" valid:"required"`
+	TargetURL  string `json:"targetURL"`
+	Workflow   string `json:"workflow"`
+	WorkflowID string `json:"workflowID"`
 }
 
-// signWebauthnRequestBody model of the request body of Webauthn authentication endpoint.
-type signWebauthnRequestBody struct {
-	TargetURL string `json:"targetURL"`
+type bodyRegisterTOTP struct {
+	Algorithm string `json:"algorithm"`
+	Length    int64  `json:"length"`
+	Period    int    `json:"period"`
 }
 
-type signDuoRequestBody struct {
-	TargetURL string `json:"targetURL"`
-	Passcode  string `json:"passcode"`
+type bodyRegisterFinishTOTP struct {
+	Token string `json:"token" valid:"required"`
 }
 
-// preferred2FAMethodBody the selected 2FA method.
-type preferred2FAMethodBody struct {
+// bodySignWebAuthnRequest is the  model of the request body of WebAuthn 2FA authentication endpoint.
+type bodySignWebAuthnRequest struct {
+	TargetURL  string `json:"targetURL"`
+	Workflow   string `json:"workflow"`
+	WorkflowID string `json:"workflowID"`
+
+	Response json.RawMessage `json:"response"`
+}
+
+// bodySignPasskeyRequest is the  model of the request body of WebAuthn 2FA authentication endpoint.
+type bodySignPasskeyRequest struct {
+	TargetURL      string `json:"targetURL"`
+	Workflow       string `json:"workflow"`
+	WorkflowID     string `json:"workflowID"`
+	RequestMethod  string `json:"requestMethod"`
+	KeepMeLoggedIn *bool  `json:"keepMeLoggedIn"`
+
+	Response json.RawMessage `json:"response"`
+}
+
+// bodyGETUserSessionElevate is the  model of the request body of the User Session Elevation PUT endpoint.
+type bodyGETUserSessionElevate struct {
+	RequireSecondFactor bool `json:"require_second_factor"`
+	SkipSecondFactor    bool `json:"skip_second_factor"`
+	CanSkipSecondFactor bool `json:"can_skip_second_factor"`
+	FactorKnowledge     bool `json:"factor_knowledge"`
+	Elevated            bool `json:"elevated"`
+	Expires             int  `json:"expires"`
+}
+
+// bodyPOSTUserSessionElevate is the  model of the request body of the User Session Elevation PUT endpoint.
+type bodyPOSTUserSessionElevate struct {
+	DeleteID string `json:"delete_id"`
+}
+
+// bodyPUTUserSessionElevate is the  model of the request body of the User Session Elevation PUT endpoint.
+type bodyPUTUserSessionElevate struct {
+	OneTimeCode string `json:"otc"`
+}
+
+type bodyRegisterWebAuthnPUTRequest struct {
+	Description string `json:"description"`
+}
+
+type bodyEditWebAuthnCredentialRequest struct {
+	Description string `json:"description"`
+}
+
+// bodySignDuoRequest is the  model of the request body of Duo 2FA authentication endpoint.
+type bodySignDuoRequest struct {
+	TargetURL  string `json:"targetURL"`
+	Passcode   string `json:"passcode"`
+	Workflow   string `json:"workflow"`
+	WorkflowID string `json:"workflowID"`
+}
+
+// bodyPreferred2FAMethod the selected 2FA method.
+type bodyPreferred2FAMethod struct {
 	Method string `json:"method" valid:"required"`
 }
 
-// firstFactorRequestBody represents the JSON body received by the endpoint.
-type firstFactorRequestBody struct {
+// bodyFirstFactorRequest represents the JSON body received by the endpoint.
+type bodyFirstFactorRequest struct {
 	Username       string `json:"username" valid:"required"`
 	Password       string `json:"password" valid:"required"`
+	Workflow       string `json:"workflow"`
+	WorkflowID     string `json:"workflowID"`
 	TargetURL      string `json:"targetURL"`
 	RequestMethod  string `json:"requestMethod"`
 	KeepMeLoggedIn *bool  `json:"keepMeLoggedIn"`
 	// KeepMeLoggedIn: Cannot require this field because of https://github.com/asaskevich/govalidator/pull/329
 	// TODO(c.michaud): add required validation once the above PR is merged.
+}
+
+// bodyFirstFactorRequest represents the JSON body received by the endpoint.
+type bodySecondFactorPasswordRequest struct {
+	Password   string `json:"password" valid:"required"`
+	TargetURL  string `json:"targetURL"`
+	Workflow   string `json:"workflow"`
+	WorkflowID string `json:"workflowID"`
+}
+
+// bodyFirstFactorRequest represents the JSON body received by the endpoint.
+type bodyFirstFactorReauthenticateRequest struct {
+	Password      string `json:"password" valid:"required"`
+	Workflow      string `json:"workflow"`
+	WorkflowID    string `json:"workflowID"`
+	TargetURL     string `json:"targetURL"`
+	RequestMethod string `json:"requestMethod"`
 }
 
 // checkURIWithinDomainRequestBody represents the JSON body received by the endpoint checking if an URI is within
@@ -100,7 +188,8 @@ type DuoSignResponse struct {
 type StateResponse struct {
 	Username              string               `json:"username"`
 	AuthenticationLevel   authentication.Level `json:"authentication_level"`
-	DefaultRedirectionURL string               `json:"default_redirection_url"`
+	FactorKnowledge       bool                 `json:"factor_knowledge"`
+	DefaultRedirectionURL string               `json:"default_redirection_url,omitempty"`
 }
 
 // resetPasswordStep1RequestBody model of the reset password (step1) request body.
@@ -112,3 +201,32 @@ type resetPasswordStep1RequestBody struct {
 type resetPasswordStep2RequestBody struct {
 	Password string `json:"password"`
 }
+
+type bodyRequestPasswordResetDELETE struct {
+	Token string `json:"token"`
+}
+
+// changePasswordRequestBody model of the change password request body.
+type changePasswordRequestBody struct {
+	Username    string `json:"username"`
+	OldPassword string `json:"old_password"`
+	NewPassword string `json:"new_password"`
+}
+
+// PasswordPolicyBody represents the response sent by the password reset step 2.
+type PasswordPolicyBody struct {
+	Mode             string `json:"mode"`
+	MinLength        int    `json:"min_length"`
+	MaxLength        int    `json:"max_length"`
+	MinScore         int    `json:"min_score"`
+	RequireUppercase bool   `json:"require_uppercase"`
+	RequireLowercase bool   `json:"require_lowercase"`
+	RequireNumber    bool   `json:"require_number"`
+	RequireSpecial   bool   `json:"require_special"`
+}
+
+type handlerAuthorizationConsent func(
+	ctx *middlewares.AutheliaCtx, issuer *url.URL, client oidc.Client,
+	userSession session.UserSession, subject uuid.UUID,
+	rw http.ResponseWriter, r *http.Request,
+	requester oauthelia2.Requester) (consent *model.OAuth2ConsentSession, handled bool)

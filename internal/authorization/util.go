@@ -1,7 +1,6 @@
 package authorization
 
 import (
-	"net"
 	"regexp"
 	"strings"
 
@@ -9,8 +8,8 @@ import (
 	"github.com/authelia/authelia/v4/internal/configuration/schema"
 )
 
-// PolicyToLevel converts a string policy to int authorization level.
-func PolicyToLevel(policy string) Level {
+// NewLevel converts a string policy to int authorization level.
+func NewLevel(policy string) Level {
 	switch policy {
 	case bypass:
 		return Bypass
@@ -25,9 +24,9 @@ func PolicyToLevel(policy string) Level {
 	return Denied
 }
 
-// LevelToPolicy converts a int authorization level to string policy.
-func LevelToPolicy(level Level) (policy string) {
-	switch level {
+// String returns a policy string representation of an authorization.Level.
+func (l Level) String() string {
+	switch l {
 	case Bypass:
 		return bypass
 	case OneFactor:
@@ -36,59 +35,81 @@ func LevelToPolicy(level Level) (policy string) {
 		return twoFactor
 	case Denied:
 		return deny
+	default:
+		return deny
 	}
-
-	return deny
 }
 
-func schemaSubjectToACLSubject(subjectRule string) (subject AccessControlSubject) {
-	if strings.HasPrefix(subjectRule, userPrefix) {
-		user := strings.Trim(subjectRule[len(userPrefix):], " ")
+func stringSliceToRegexpSlice(strings []string) (regexps []regexp.Regexp, err error) {
+	var pattern *regexp.Regexp
+
+	for _, str := range strings {
+		if pattern, err = regexp.Compile(str); err != nil {
+			return nil, err
+		}
+
+		regexps = append(regexps, *pattern)
+	}
+
+	return regexps, nil
+}
+
+func schemaSubjectToACLSubject(subjectRule string) (subject SubjectMatcher) {
+	if strings.HasPrefix(subjectRule, prefixUser) {
+		user := strings.Trim(subjectRule[lenPrefixUser:], " ")
 
 		return AccessControlUser{Name: user}
 	}
 
-	if strings.HasPrefix(subjectRule, groupPrefix) {
-		group := strings.Trim(subjectRule[len(groupPrefix):], " ")
+	if strings.HasPrefix(subjectRule, prefixGroup) {
+		group := strings.Trim(subjectRule[lenPrefixGroup:], " ")
 
 		return AccessControlGroup{Name: group}
+	}
+
+	if strings.HasPrefix(subjectRule, prefixOAuth2Client) {
+		clientID := strings.Trim(subjectRule[lenPrefixOAuth2Client:], " ")
+
+		return AccessControlClient{Provider: "OAuth2", ID: clientID}
 	}
 
 	return nil
 }
 
-func schemaDomainsToACL(domainRules []string) (domains []AccessControlDomain) {
+func ruleAddDomain(domainRules []string, rule *AccessControlRule) {
 	for _, domainRule := range domainRules {
-		domain := AccessControlDomain{}
+		subjects, r := NewAccessControlDomain(domainRule)
 
-		domainRule = strings.ToLower(domainRule)
+		rule.Domains = append(rule.Domains, r)
 
-		switch {
-		case strings.HasPrefix(domainRule, "*."):
-			domain.Wildcard = true
-			domain.Name = domainRule[1:]
-		case strings.HasPrefix(domainRule, "{user}"):
-			domain.UserWildcard = true
-			domain.Name = domainRule[7:]
-		case strings.HasPrefix(domainRule, "{group}"):
-			domain.GroupWildcard = true
-			domain.Name = domainRule[8:]
-		default:
-			domain.Name = domainRule
+		if !rule.HasSubjects && subjects {
+			rule.HasSubjects = true
 		}
-
-		domains = append(domains, domain)
 	}
-
-	return domains
 }
 
-func schemaResourcesToACL(resourceRules []string) (resources []AccessControlResource) {
-	for _, resourceRule := range resourceRules {
-		resources = append(resources, AccessControlResource{regexp.MustCompile(resourceRule)})
-	}
+func ruleAddDomainRegex(exps []regexp.Regexp, rule *AccessControlRule) {
+	for _, exp := range exps {
+		subjects, r := NewAccessControlDomainRegex(exp)
 
-	return resources
+		rule.Domains = append(rule.Domains, r)
+
+		if !rule.HasSubjects && subjects {
+			rule.HasSubjects = true
+		}
+	}
+}
+
+func ruleAddResources(exps []regexp.Regexp, rule *AccessControlRule) {
+	for _, exp := range exps {
+		subjects, r := NewAccessControlResource(exp)
+
+		rule.Resources = append(rule.Resources, r)
+
+		if !rule.HasSubjects && subjects {
+			rule.HasSubjects = true
+		}
+	}
 }
 
 func schemaMethodsToACL(methodRules []string) (methods []string) {
@@ -97,74 +118,6 @@ func schemaMethodsToACL(methodRules []string) (methods []string) {
 	}
 
 	return methods
-}
-
-func schemaNetworksToACL(networkRules []string, networksMap map[string][]*net.IPNet, networksCacheMap map[string]*net.IPNet) (networks []*net.IPNet) {
-	for _, network := range networkRules {
-		if _, ok := networksMap[network]; !ok {
-			if _, ok := networksCacheMap[network]; ok {
-				networks = append(networks, networksCacheMap[network])
-			} else {
-				cidr, err := parseNetwork(network)
-				if err == nil {
-					networks = append(networks, cidr)
-					networksCacheMap[cidr.String()] = cidr
-
-					if cidr.String() != network {
-						networksCacheMap[network] = cidr
-					}
-				}
-			}
-		} else {
-			networks = append(networks, networksMap[network]...)
-		}
-	}
-
-	return networks
-}
-
-func parseSchemaNetworks(schemaNetworks []schema.ACLNetwork) (networksMap map[string][]*net.IPNet, networksCacheMap map[string]*net.IPNet) {
-	// These maps store pointers to the net.IPNet values so we can reuse them efficiently.
-	// The networksMap contains the named networks as keys, the networksCacheMap contains the CIDR notations as keys.
-	networksMap = map[string][]*net.IPNet{}
-	networksCacheMap = map[string]*net.IPNet{}
-
-	for _, aclNetwork := range schemaNetworks {
-		var networks []*net.IPNet
-
-		for _, networkRule := range aclNetwork.Networks {
-			cidr, err := parseNetwork(networkRule)
-			if err == nil {
-				networks = append(networks, cidr)
-				networksCacheMap[cidr.String()] = cidr
-
-				if cidr.String() != networkRule {
-					networksCacheMap[networkRule] = cidr
-				}
-			}
-		}
-
-		if _, ok := networksMap[aclNetwork.Name]; len(networks) != 0 && !ok {
-			networksMap[aclNetwork.Name] = networks
-		}
-	}
-
-	return networksMap, networksCacheMap
-}
-
-func parseNetwork(networkRule string) (cidr *net.IPNet, err error) {
-	if !strings.Contains(networkRule, "/") {
-		ip := net.ParseIP(networkRule)
-		if ip.To4() != nil {
-			_, cidr, err = net.ParseCIDR(networkRule + "/32")
-		} else {
-			_, cidr, err = net.ParseCIDR(networkRule + "/128")
-		}
-	} else {
-		_, cidr, err = net.ParseCIDR(networkRule)
-	}
-
-	return cidr, err
 }
 
 func schemaSubjectsToACL(subjectRules [][]string) (subjects []AccessControlSubjects) {
@@ -193,6 +146,10 @@ func domainToPrefixSuffix(domain string) (prefix, suffix string) {
 	return parts[0], strings.Join(parts[1:], ".")
 }
 
+func NewSubjects(subjectRules [][]string) (subjects []AccessControlSubjects) {
+	return schemaSubjectsToACL(subjectRules)
+}
+
 // IsAuthLevelSufficient returns true if the current authenticationLevel is above the authorizationLevel.
 func IsAuthLevelSufficient(authenticationLevel authentication.Level, authorizationLevel Level) bool {
 	switch authorizationLevel {
@@ -205,4 +162,36 @@ func IsAuthLevelSufficient(authenticationLevel authentication.Level, authorizati
 	}
 
 	return true
+}
+
+func isOpenIDConnectMFA(config *schema.Configuration) (mfa bool) {
+	if config == nil || config.IdentityProviders.OIDC == nil {
+		return false
+	}
+
+	for _, client := range config.IdentityProviders.OIDC.Clients {
+		switch client.AuthorizationPolicy {
+		case oneFactor:
+			continue
+		case twoFactor:
+			return true
+		default:
+			policy, ok := config.IdentityProviders.OIDC.AuthorizationPolicies[client.AuthorizationPolicy]
+			if !ok {
+				continue
+			}
+
+			if policy.DefaultPolicy == twoFactor {
+				return true
+			}
+
+			for _, rule := range policy.Rules {
+				if rule.Policy == twoFactor {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
 }

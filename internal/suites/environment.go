@@ -1,7 +1,6 @@
 package suites
 
 import (
-	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -11,7 +10,6 @@ import (
 	"github.com/authelia/authelia/v4/internal/utils"
 )
 
-//nolint:unparam
 func waitUntilServiceLogDetected(
 	interval time.Duration,
 	timeout time.Duration,
@@ -20,22 +18,22 @@ func waitUntilServiceLogDetected(
 	logPatterns []string) error {
 	log.Debug("Waiting for service " + service + " to be ready...")
 
-	err := utils.CheckUntil(5*time.Second, 1*time.Minute, func() (bool, error) {
-		logs, err := dockerEnvironment.Logs(service, []string{"--tail", "20"})
-		fmt.Printf(".")
+	err := utils.CheckUntil(interval, timeout, func() (bool, error) {
+		logs, err := dockerEnvironment.Logs(service, []string{"--tail", "40"})
 
 		if err != nil {
 			return false, err
 		}
+
 		for _, pattern := range logPatterns {
 			if strings.Contains(logs, pattern) {
+				log.Debug("Service " + service + " is ready!")
 				return true, nil
 			}
 		}
+
 		return false, nil
 	})
-
-	fmt.Print("\n")
 
 	return err
 }
@@ -46,7 +44,7 @@ func waitUntilAutheliaBackendIsReady(dockerEnvironment *DockerEnvironment) error
 		90*time.Second,
 		dockerEnvironment,
 		"authelia-backend",
-		[]string{"Listening for"})
+		[]string{"Startup complete"})
 }
 
 func waitUntilAutheliaFrontendIsReady(dockerEnvironment *DockerEnvironment) error {
@@ -55,7 +53,16 @@ func waitUntilAutheliaFrontendIsReady(dockerEnvironment *DockerEnvironment) erro
 		90*time.Second,
 		dockerEnvironment,
 		"authelia-frontend",
-		[]string{"dev server running at", "ready in"})
+		[]string{"dev server running at", "ready in", "server restarted"})
+}
+
+func waitUntilK3DIsReady(dockerEnvironment *DockerEnvironment) error {
+	return waitUntilServiceLogDetected(
+		5*time.Second,
+		90*time.Second,
+		dockerEnvironment,
+		"k3d",
+		[]string{"API listen on [::]:2376"})
 }
 
 func waitUntilSambaIsReady(dockerEnvironment *DockerEnvironment) error {
@@ -67,26 +74,43 @@ func waitUntilSambaIsReady(dockerEnvironment *DockerEnvironment) error {
 		[]string{"samba entered RUNNING state"})
 }
 
+func waitUntilServiceLog(dockerEnvironment *DockerEnvironment, service, log string) error {
+	return waitUntilServiceLogDetected(
+		time.Second,
+		10*time.Second,
+		dockerEnvironment,
+		service,
+		[]string{log})
+}
+
 func waitUntilAutheliaIsReady(dockerEnvironment *DockerEnvironment, suite string) error {
-	log.Info("Waiting for Authelia to be ready...")
+	if os.Getenv("CI") != t && suite != "CLI" {
+		log.Info("Waiting for Authelia (Frontend) to be ready...")
+
+		if err := waitUntilAutheliaFrontendIsReady(dockerEnvironment); err != nil {
+			return err
+		}
+
+		log.Info("Authelia (Frontend) is ready!")
+	}
+
+	log.Info("Waiting for Authelia (Backend) to be ready...")
 
 	if err := waitUntilAutheliaBackendIsReady(dockerEnvironment); err != nil {
 		return err
 	}
 
-	if os.Getenv("CI") != t && suite != "CLI" {
-		if err := waitUntilAutheliaFrontendIsReady(dockerEnvironment); err != nil {
-			return err
-		}
-	}
+	log.Info("Authelia (Backend) is ready!")
 
 	if suite == "ActiveDirectory" {
+		log.Info("Waiting for Samba to be ready...")
+
 		if err := waitUntilSambaIsReady(dockerEnvironment); err != nil {
 			return err
 		}
-	}
 
-	log.Info("Authelia is now ready!")
+		log.Info("Samba is ready!")
+	}
 
 	return nil
 }

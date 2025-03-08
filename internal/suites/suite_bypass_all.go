@@ -1,7 +1,6 @@
 package suites
 
 import (
-	"fmt"
 	"time"
 )
 
@@ -9,41 +8,30 @@ var bypassAllSuiteName = "BypassAll"
 
 func init() {
 	dockerEnvironment := NewDockerEnvironment([]string{
-		"internal/suites/docker-compose.yml",
-		"internal/suites/BypassAll/docker-compose.yml",
-		"internal/suites/example/compose/authelia/docker-compose.backend.{}.yml",
-		"internal/suites/example/compose/authelia/docker-compose.frontend.{}.yml",
-		"internal/suites/example/compose/nginx/backend/docker-compose.yml",
-		"internal/suites/example/compose/nginx/portal/docker-compose.yml",
-		"internal/suites/example/compose/httpbin/docker-compose.yml",
-		"internal/suites/example/compose/smtp/docker-compose.yml",
-		"internal/suites/example/compose/duo-api/docker-compose.yml",
+		"internal/suites/compose.yml",
+		"internal/suites/BypassAll/compose.yml",
+		"internal/suites/example/compose/authelia/compose.backend.{}.yml",
+		"internal/suites/example/compose/authelia/compose.frontend.{}.yml",
+		"internal/suites/example/compose/nginx/backend/compose.yml",
+		"internal/suites/example/compose/nginx/portal/compose.yml",
+		"internal/suites/example/compose/httpbin/compose.yml",
+		"internal/suites/example/compose/smtp/compose.yml",
 	})
 
-	setup := func(suitePath string) error {
-		if err := dockerEnvironment.Up(); err != nil {
+	setup := func(suitePath string) (err error) {
+		if err = dockerEnvironment.Up(); err != nil {
 			return err
 		}
 
-		return waitUntilAutheliaIsReady(dockerEnvironment, bypassAllSuiteName)
+		if err = waitUntilAutheliaIsReady(dockerEnvironment, bypassAllSuiteName); err != nil {
+			return err
+		}
+
+		return updateDevEnvFileForDomain(BaseDomain, true)
 	}
 
 	displayAutheliaLogs := func() error {
-		backendLogs, err := dockerEnvironment.Logs("authelia-backend", nil)
-		if err != nil {
-			return err
-		}
-
-		fmt.Println(backendLogs)
-
-		frontendLogs, err := dockerEnvironment.Logs("authelia-frontend", nil)
-		if err != nil {
-			return err
-		}
-
-		fmt.Println(frontendLogs)
-
-		return nil
+		return dockerEnvironment.PrintLogs("authelia-backend", "authelia-frontend")
 	}
 
 	teardown := func(suitePath string) error {

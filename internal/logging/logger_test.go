@@ -3,7 +3,6 @@ package logging
 import (
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"runtime"
 	"testing"
@@ -16,15 +15,10 @@ import (
 )
 
 func TestShouldWriteLogsToFile(t *testing.T) {
-	dir, err := os.MkdirTemp("/tmp", "logs-dir")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	defer os.RemoveAll(dir)
+	dir := t.TempDir()
 
 	path := fmt.Sprintf("%s/authelia.log", dir)
-	err = InitializeLogger(schema.LogConfiguration{Format: "text", FilePath: path, KeepStdout: false}, false)
+	err := InitializeLogger(schema.Log{Format: "text", FilePath: path, KeepStdout: false}, false)
 	require.NoError(t, err)
 
 	Logger().Info("This is a test")
@@ -39,15 +33,10 @@ func TestShouldWriteLogsToFile(t *testing.T) {
 }
 
 func TestShouldWriteLogsToFileAndStdout(t *testing.T) {
-	dir, err := os.MkdirTemp("/tmp", "logs-dir")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	defer os.RemoveAll(dir)
+	dir := t.TempDir()
 
 	path := fmt.Sprintf("%s/authelia.log", dir)
-	err = InitializeLogger(schema.LogConfiguration{Format: "text", FilePath: path, KeepStdout: true}, false)
+	err := InitializeLogger(schema.Log{Format: "text", FilePath: path, KeepStdout: true}, false)
 	require.NoError(t, err)
 
 	Logger().Info("This is a test")
@@ -62,15 +51,10 @@ func TestShouldWriteLogsToFileAndStdout(t *testing.T) {
 }
 
 func TestShouldFormatLogsAsJSON(t *testing.T) {
-	dir, err := os.MkdirTemp("/tmp", "logs-dir")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	defer os.RemoveAll(dir)
+	dir := t.TempDir()
 
 	path := fmt.Sprintf("%s/authelia.log", dir)
-	err = InitializeLogger(schema.LogConfiguration{Format: "json", FilePath: path, KeepStdout: false}, false)
+	err := InitializeLogger(schema.Log{Format: "json", FilePath: path, KeepStdout: false}, false)
 	require.NoError(t, err)
 
 	Logger().Info("This is a test")
@@ -85,13 +69,13 @@ func TestShouldFormatLogsAsJSON(t *testing.T) {
 }
 
 func TestShouldRaiseErrorOnInvalidFile(t *testing.T) {
-	err := InitializeLogger(schema.LogConfiguration{FilePath: "/not/a/valid/path/to.log"}, false)
+	err := InitializeLogger(schema.Log{FilePath: "/not/a/valid/path/to.log"}, false)
 
 	switch runtime.GOOS {
 	case "windows":
-		assert.EqualError(t, err, "open /not/a/valid/path/to.log: The system cannot find the path specified.")
+		assert.EqualError(t, err, "error opening log file: open /not/a/valid/path/to.log: The system cannot find the path specified.")
 	default:
-		assert.EqualError(t, err, "open /not/a/valid/path/to.log: no such file or directory")
+		assert.EqualError(t, err, "error opening log file: open /not/a/valid/path/to.log: no such file or directory")
 	}
 }
 
